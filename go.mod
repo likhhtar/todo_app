@@ -1,4 +1,4 @@
-module github.com/likhhtar/todo_list
+module github.com/likhhtar/todo_app
 
 go 1.22.5
 

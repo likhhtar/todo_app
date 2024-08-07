@@ -18,6 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
 var rnd *renderer.Render
@@ -61,7 +62,11 @@ type (
 
 func init() {
 	fmt.Println("Init function running")
-	rnd = renderer.New()
+	rnd = renderer.New(
+		renderer.Options{
+			ParseGlobPattern: "html/*.html",
+		},
+	)
 	var err error
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -70,12 +75,17 @@ func init() {
 	client, err = mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	checkError(err)
 
+	err = client.Ping(ctx, readpref.Primary())
+	checkError(err)
+
 	db = client.Database(dbName)
 }
 
 func main() {
 	router := chi.NewRouter()
 	router.Use(middleware.Logger)
+	fs := http.FileServer(http.Dir("./static"))
+	router.Handle("/static/*", http.StripPrefix("/static/", fs))
 	router.Get("/", homeHandler)
 	router.Mount("/todo", todoHandlers())
 
@@ -132,8 +142,8 @@ func checkError(err error) {
 }
 
 func homeHandler(rw http.ResponseWriter, r *http.Request) {
-	filePath := "./README.md"
-	err := rnd.FileView(rw, http.StatusOK, filePath, "readme.md")
+	// filePath := "./README.md"
+	err := rnd.HTML(rw, http.StatusOK, "indexPage", nil)
 	checkError(err)
 }
 
