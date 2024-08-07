@@ -264,3 +264,32 @@ func updateTodo(rw http.ResponseWriter, r *http.Request) {
 		"data":    data.ModifiedCount,
 	})
 }
+
+func deleteTodo(rw http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	res, err := primitive.ObjectIDFromHex(id)
+
+	if err != nil {
+		log.Printf("invalid id: %v\n", err.Error())
+		rnd.JSON(rw, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	filter := bson.M{"id": res}
+	data, err := db.Collection(collectionName).DeleteOne(r.Context(), filter)
+	if err != nil {
+		log.Printf("could not delete from db: %v\n", err.Error())
+		rnd.JSON(rw, http.StatusInternalServerError, renderer.M{
+			"message": "Error with deleting data",
+			"error":   err.Error(),
+		})
+
+		return
+	}
+
+	rnd.JSON(rw, http.StatusOK, renderer.M{
+		"message": "Item deleted successfully",
+		"data":    data,
+	})
+
+}
