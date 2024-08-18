@@ -21,9 +21,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var rnd *renderer.Render
-var client *mongo.Client
-var db *mongo.Database
+var (
+	rnd    *renderer.Render
+	client *mongo.Client
+	db     *mongo.Database
+)
 
 const (
 	dbName         string = "golang-todo"
@@ -61,34 +63,47 @@ type (
 )
 
 func init() {
-	fmt.Println("Init function running")
+	fmt.Println("Initializing application...")
+
+	// Инициализация рендерера
 	rnd = renderer.New(
 		renderer.Options{
 			ParseGlobPattern: "html/*.html",
 		},
 	)
-	var err error
 
+	// Создание контекста с тайм-аутом
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Подключение к MongoDB
+	var err error
 	client, err = mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
 	checkError(err)
 
+	// Проверка доступности MongoDB
 	err = client.Ping(ctx, readpref.Primary())
 	checkError(err)
 
+	// Инициализация базы данных
 	db = client.Database(dbName)
+	fmt.Printf("Database %s initialized.\n", dbName)
 }
 
 func main() {
+	// Настройка маршрутизатора (управляет http запросами)
 	router := chi.NewRouter()
 	router.Use(middleware.Logger)
+
+	// Обработка статических файлов
 	fs := http.FileServer(http.Dir("./static"))
 	router.Handle("/static/*", http.StripPrefix("/static/", fs))
+
+	// Маршрутизация и обработчики
 	router.Get("/", homeHandler)
 	router.Mount("/todo", todoHandlers())
 
+	// Настройка и запуск сервера
 	server := &http.Server{
 		Addr:         ":9000",
 		Handler:      router,
@@ -96,19 +111,21 @@ func main() {
 		WriteTimeout: 60 * time.Second,
 	}
 
+	// Обработка сигналов прерывания
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt)
 
-	// start the server
+	// Запуск сервера
 	go func() {
-		fmt.Println("Server started on port", 9000)
+		fmt.Println("Server started on port", server.Addr)
 		if err := server.ListenAndServe(); err != nil {
 			log.Printf("listen:%s\n", err)
 		}
 	}()
 
+	// Завершение программы
 	sig := <-stopChan
-	log.Printf("signal recieved: %v\n", sig)
+	log.Printf("Signal received: %v. Shutting down...", sig)
 
 	if err := client.Disconnect(context.Background()); err != nil {
 		panic(err)
@@ -126,12 +143,15 @@ func main() {
 
 func todoHandlers() http.Handler {
 	router := chi.NewRouter()
+
+	// Определяем группу маршрутов для операций с задачами
 	router.Group(func(r chi.Router) {
 		r.Get("/", getTodos)
 		r.Post("/", createTodo)
 		r.Put("/{id}", updateTodo)
 		r.Delete("/{id}", deleteTodo)
 	})
+
 	return router
 }
 
@@ -148,27 +168,29 @@ func homeHandler(rw http.ResponseWriter, r *http.Request) {
 }
 
 func getTodos(rw http.ResponseWriter, r *http.Request) {
-	var todoListFromDB = []TodoModel{}
+	// Определяем фильтр для поиска задач
 	filter := bson.D{}
 
+	// Выполняем запрос к базе данных
 	cursor, err := db.Collection(collectionName).Find(context.Background(), filter)
-
 	if err != nil {
 		log.Printf("failed to fetch todo records from the db: %v\n", err.Error())
-		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
+		rnd.JSON(rw, http.StatusInternalServerError, renderer.M{
 			"message": "Could not fetch the todo collection",
 			"error":   err.Error(),
 		})
-
 		return
 	}
+	defer cursor.Close(context.Background())
 
-	todoList := []Todo{}
+	// Читаем данные из курсора
+	var todoListFromDB = []TodoModel{}
 	if err = cursor.All(context.Background(), &todoListFromDB); err != nil {
 		checkError(err)
 	}
 
-	// loop through the database list, convert TodoModel to JSON and append to the todoList array.
+	// Преобразуем задачи из модели в формат ответа
+	todoList := []Todo{}
 	for _, td := range todoListFromDB {
 		todoList = append(todoList, Todo{
 			ID:        td.ID.Hex(),
@@ -184,11 +206,11 @@ func getTodos(rw http.ResponseWriter, r *http.Request) {
 }
 
 func createTodo(rw http.ResponseWriter, r *http.Request) {
-
 	var todoReq CreateTodo
 
+	// Декодируем данные из тела запроса
 	if err := json.NewDecoder(r.Body).Decode(&todoReq); err != nil {
-		log.Printf("failed to decode json data: %v\n", err.Error())
+		log.Printf("failed to decode JSON data: %v\n", err)
 		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
 			"message": "could not decode data",
 		})
@@ -203,7 +225,7 @@ func createTodo(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// create a TodoModel for adding a todo to the database
+	// Создаем модель задачи для добавления в базу данных
 	todoModel := TodoModel{
 		ID:        primitive.NewObjectID(),
 		Title:     todoReq.Title,
@@ -211,95 +233,117 @@ func createTodo(rw http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	// add the todo to the database
-	data, err := db.Collection(collectionName).InsertOne(r.Context(), todoModel)
+	// Добавляем задачу в базу данных
+	result, err := db.Collection(collectionName).InsertOne(r.Context(), todoModel)
 	if err != nil {
 		log.Printf("failed to insert data into the database: %v\n", err.Error())
 		rnd.JSON(rw, http.StatusInternalServerError, renderer.M{
-			"message": "Failed to insert data into the database",
+			"message": "failed to insert data into the database",
 			"error":   err.Error(),
 		})
 		return
 	}
+
+	// Отправляем успешный ответ клиенту
 	rnd.JSON(rw, http.StatusCreated, renderer.M{
 		"message": "Todo created successfully",
-		"ID":      data.InsertedID,
+		"ID":      result.InsertedID,
 	})
 }
 
 func updateTodo(rw http.ResponseWriter, r *http.Request) {
+	// Достаем id из URL параметра
 	id := strings.TrimSpace(chi.URLParam(r, "id"))
-
-	res, err := primitive.ObjectIDFromHex(id)
+	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		log.Printf("id is not a valid hex value: %v\n", err.Error())
 		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
 			"message": "The id is invalid",
 			"error":   err.Error(),
 		})
-
 		return
 	}
 
+	// Декодируем данные обновления из тела запроса
 	var updateTodoReq UpdateTodo
-
 	if err := json.NewDecoder(r.Body).Decode(&updateTodoReq); err != nil {
 		log.Printf("failed to decode the json responce body data: %v\n", err.Error())
-		rnd.JSON(rw, http.StatusBadRequest, err.Error())
+		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
+			"message": "could not decode the data",
+			"error":   err.Error(),
+		})
 	}
 
 	if updateTodoReq.Title == "" {
 		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
-			"message": "Title cannot be empty",
+			"message": "title cannot be empty",
 		})
-
 		return
 	}
 
-	filter := bson.M{"id": res}
-	update := bson.M{"$set": bson.M{"title": updateTodoReq.Title, "completed": updateTodoReq.Completed}}
-	data, err := db.Collection(collectionName).UpdateOne(r.Context(), filter, update)
+	// Определяем фильтр и обновление для базы данных
+	filter := bson.M{"id": objID}
+	update := bson.M{"$set": bson.M{
+		"title":     updateTodoReq.Title,
+		"completed": updateTodoReq.Completed,
+	}}
 
+	// Выполняем обновление записи в базе данных
+	result, err := db.Collection(collectionName).UpdateOne(r.Context(), filter, update)
 	if err != nil {
 		log.Printf("failed to update db collection: %v\n", err.Error())
 		rnd.JSON(rw, http.StatusInternalServerError, renderer.M{
-			"message": "Failed to update data in db",
+			"message": "failed to update data in db",
 			"error":   err.Error(),
 		})
-
 		return
 	}
+
+	// Отправляем успешный ответ клиенту
 	rnd.JSON(rw, http.StatusOK, renderer.M{
-		"message": "Updated successfully",
-		"data":    data.ModifiedCount,
+		"message":     "Updated successfully",
+		"resultCount": result.ModifiedCount,
 	})
 }
 
 func deleteTodo(rw http.ResponseWriter, r *http.Request) {
+	// Достаем id из URL параметра
 	id := chi.URLParam(r, "id")
-	res, err := primitive.ObjectIDFromHex(id)
-
+	objID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
 		log.Printf("invalid id: %v\n", err.Error())
-		rnd.JSON(rw, http.StatusBadRequest, err.Error())
+		rnd.JSON(rw, http.StatusBadRequest, renderer.M{
+			"message": "the ID is invalid",
+			"error":   err.Error(),
+		})
 		return
 	}
 
-	filter := bson.M{"id": res}
-	data, err := db.Collection(collectionName).DeleteOne(r.Context(), filter)
+	// Определяем фильтр и удаляем запись из бд
+	filter := bson.M{"id": objID}
+	result, err := db.Collection(collectionName).DeleteOne(r.Context(), filter)
 	if err != nil {
 		log.Printf("could not delete from db: %v\n", err.Error())
 		rnd.JSON(rw, http.StatusInternalServerError, renderer.M{
-			"message": "Error with deleting data",
+			"message": "error with deleting data",
 			"error":   err.Error(),
 		})
 
 		return
 	}
 
+	// Проверяем, была ли удалена хотя бы одна запись
+	if result.DeletedCount == 0 {
+		rnd.JSON(rw, http.StatusNotFound, renderer.M{
+			"message": "Todo not found",
+		})
+		return
+	}
+
+	// Отправляем успешный ответ клиенту
 	rnd.JSON(rw, http.StatusOK, renderer.M{
-		"message": "Item deleted successfully",
-		"data":    data,
+		"message":    "Item deleted successfully",
+		"resultCont": result.DeletedCount,
 	})
 
 }
